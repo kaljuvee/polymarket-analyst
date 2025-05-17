@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta, timezone
+import json
 
 # Set page config
 st.set_page_config(page_title="Polymarket Analyst", layout="wide")
@@ -30,6 +31,13 @@ def fetch_market_data():
         st.error(f"Error fetching data: {str(e)}")
         return None
 
+# Function to format category name
+def format_category(category):
+    if not category:
+        return "Uncategorized"
+    # Replace hyphens with spaces and capitalize words
+    return category.replace('-', ' ').title()
+
 # Function to process data into DataFrame
 def process_market_data(data):
     if not data:
@@ -37,6 +45,11 @@ def process_market_data(data):
     
     # Convert to DataFrame
     df = pd.DataFrame(data)
+    
+    # Debug: Print first market object structure
+    if len(data) > 0:
+        print("First market object structure:")
+        print(json.dumps(data[0], indent=2))
     
     # Print column names for debugging
     print("Available columns:", df.columns.tolist())
@@ -94,8 +107,9 @@ if st.sidebar.button("Fetch Latest Data"):
         data = fetch_market_data()
         if data:
             st.success("Data fetched successfully!")
+            # Store raw data in session state for debugging
+            st.session_state['raw_data'] = data
             df = process_market_data(data)
-            
             # Store in session state
             st.session_state['df'] = df
         else:
@@ -105,17 +119,21 @@ if st.sidebar.button("Fetch Latest Data"):
 if 'df' in st.session_state:
     df = st.session_state['df']
     
+    # Debug expander
+    with st.expander("Debug: Raw Data Sample"):
+        if 'raw_data' in st.session_state:
+            st.json(st.session_state['raw_data'][:2])  # Show first two items
+        st.write("DataFrame Info:")
+        st.write(df.info())
+        st.write("\nDataFrame Columns:")
+        st.write(df.columns.tolist())
+    
     # Filters
     st.sidebar.subheader("Filters")
     
     # Date filter
     date_options = ["Today", "This Week", "Later than One Week", "All Time"]
     selected_date = st.sidebar.selectbox("Select Time Range", date_options, index=0)
-    
-    # Category filter
-    if 'category' in df.columns:
-        categories = ['All'] + sorted(df['category'].unique().tolist())
-        selected_category = st.sidebar.selectbox("Select Category", categories)
     
     # Volume range filter
     if 'volume' in df.columns:
@@ -140,10 +158,6 @@ if 'df' in st.session_state:
                 (filtered_df['endDate'] <= end_date)
             ]
     
-    # Apply category filter
-    if 'category' in df.columns and selected_category != 'All':
-        filtered_df = filtered_df[filtered_df['category'] == selected_category]
-    
     # Apply volume filter
     if 'volume' in df.columns:
         filtered_df = filtered_df[
@@ -162,42 +176,25 @@ if 'df' in st.session_state:
         if 'liquidity' in filtered_df.columns:
             st.metric("Average Liquidity", f"${filtered_df['liquidity'].mean():,.2f}")
     
-    # Visualizations
-    st.subheader("Market Analysis")
-    
-    # Volume by Category
-    if 'category' in filtered_df.columns and 'volume' in filtered_df.columns:
-        fig_volume = px.bar(
-            filtered_df.groupby('category')['volume'].sum().reset_index(),
-            x='category',
-            y='volume',
-            title='Trading Volume by Category',
-            labels={'volume': 'Volume ($)', 'category': 'Category'}
-        )
-        st.plotly_chart(fig_volume, use_container_width=True)
-    
-    # Category Distribution
-    if 'category' in filtered_df.columns:
-        fig_category = px.pie(
-            filtered_df,
-            names='category',
-            title='Market Distribution by Category'
-        )
-        st.plotly_chart(fig_category, use_container_width=True)
-    
     # Data Table
     st.subheader("Market Details")
-    display_columns = ['question', 'category', 'volume', 'liquidity', 'endDate', 'active']
+    display_columns = ['question', 'volume', 'liquidity', 'endDate', 'active']
     available_columns = [col for col in display_columns if col in filtered_df.columns]
     
     # Format the dataframe for display
     display_df = filtered_df[available_columns].copy()
-    if 'category' in display_df.columns:
-        display_df['category'] = display_df['category'].fillna('Uncategorized')
     
+    # Sort and display the dataframe
     st.dataframe(
-        display_df.sort_values('volume' if 'volume' in display_df.columns else 'endDate', ascending=False),
-        use_container_width=True
+        display_df[available_columns].sort_values('volume' if 'volume' in display_df.columns else 'endDate', ascending=False),
+        use_container_width=True,
+        column_config={
+            "question": st.column_config.TextColumn("Question", width="large"),
+            "volume": st.column_config.NumberColumn("Volume", format="$%.2f"),
+            "liquidity": st.column_config.NumberColumn("Liquidity", format="$%.2f"),
+            "endDate": st.column_config.DatetimeColumn("End Date", format="YYYY-MM-DD HH:mm"),
+            "active": st.column_config.CheckboxColumn("Active")
+        }
     )
 else:
     st.info("Click 'Fetch Latest Data' to load market data")
