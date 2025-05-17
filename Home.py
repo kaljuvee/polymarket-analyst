@@ -109,8 +109,8 @@ if 'df' in st.session_state:
     st.sidebar.subheader("Filters")
     
     # Date filter
-    date_options = ["All Time", "Today", "This Week", "Later than One Week"]
-    selected_date = st.sidebar.selectbox("Select Time Range", date_options)
+    date_options = ["Today", "This Week", "Later than One Week", "All Time"]
+    selected_date = st.sidebar.selectbox("Select Time Range", date_options, index=0)
     
     # Category filter
     if 'category' in df.columns:
