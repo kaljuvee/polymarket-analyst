@@ -57,7 +57,19 @@ def process_market_data(data):
     date_columns = ['endDate', 'createdAt', 'updatedAt', 'closedTime']
     for col in date_columns:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col]).dt.tz_localize('UTC')
+            try:
+                # First convert to datetime
+                df[col] = pd.to_datetime(df[col])
+                # Check if already timezone-aware
+                if df[col].dt.tz is None:
+                    # If not timezone-aware, localize to UTC
+                    df[col] = df[col].dt.tz_localize('UTC')
+                else:
+                    # If already timezone-aware, convert to UTC
+                    df[col] = df[col].dt.tz_convert('UTC')
+            except Exception as e:
+                print(f"Warning: Could not process {col} column: {str(e)}")
+                continue
     
     return df
 
