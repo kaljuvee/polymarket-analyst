@@ -32,6 +32,32 @@ def format_category(category):
     # Replace hyphens with spaces and capitalize words
     return category.replace('-', ' ').title()
 
+# Function to extract winning probability from outcomePrices
+def get_winning_probability(outcome_prices_str):
+    """
+    Extract the highest probability from outcomePrices string.
+    outcomePrices is typically a JSON string like '["0.45", "0.55"]'
+    Returns the highest value as a percentage.
+    """
+    try:
+        if not outcome_prices_str or outcome_prices_str == 'N/A':
+            return None
+        
+        # Parse the string as JSON
+        if isinstance(outcome_prices_str, str):
+            prices = json.loads(outcome_prices_str)
+        else:
+            prices = outcome_prices_str
+        
+        # Convert to floats and get the maximum
+        prices_float = [float(p) for p in prices if p]
+        if prices_float:
+            return max(prices_float) * 100  # Convert to percentage
+        return None
+    except Exception as e:
+        print(f"Error parsing outcome prices: {e}")
+        return None
+
 # Function to process data into DataFrame
 def process_market_data(data):
     if not data:
@@ -49,35 +75,27 @@ def process_market_data(data):
     print("Available columns:", df.columns.tolist())
     
     # Convert string lists to actual lists if they are strings
-    if 'outcomes' in df.columns and isinstance(df['outcomes'].iloc[0], str):
-        df['outcomes'] = df['outcomes'].apply(eval)
-    if 'outcomePrices' in df.columns and isinstance(df['outcomePrices'].iloc[0], str):
-        df['outcomePrices'] = df['outcomePrices'].apply(eval)
+    if 'outcomes' in df.columns:
+        df['outcomes_parsed'] = df['outcomes'].apply(lambda x: json.loads(x) if isinstance(x, str) and x else [])
+    
+    if 'outcomePrices' in df.columns:
+        df['outcomePrices_parsed'] = df['outcomePrices'].apply(lambda x: json.loads(x) if isinstance(x, str) and x else [])
+        # Calculate winning probability
+        df['winning_probability'] = df['outcomePrices'].apply(get_winning_probability)
     
     # Convert numeric columns
-    if 'volume' in df.columns:
-        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-    if 'liquidity' in df.columns:
-        df['liquidity'] = pd.to_numeric(df['liquidity'], errors='coerce')
-    if 'volumeNum' in df.columns:
-        df['volumeNum'] = pd.to_numeric(df['volumeNum'], errors='coerce')
-    if 'liquidityNum' in df.columns:
-        df['liquidityNum'] = pd.to_numeric(df['liquidityNum'], errors='coerce')
+    numeric_columns = ['volume', 'liquidity', 'volumeNum', 'liquidityNum', 'bestBid', 'bestAsk', 'lastTradePrice']
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
     
     # Convert dates to UTC timezone
     date_columns = ['endDate', 'createdAt', 'updatedAt', 'closedTime', 'startDate']
     for col in date_columns:
         if col in df.columns:
             try:
-                # First convert to datetime
-                df[col] = pd.to_datetime(df[col])
-                # Check if already timezone-aware
-                if df[col].dt.tz is None:
-                    # If not timezone-aware, localize to UTC
-                    df[col] = df[col].dt.tz_localize('UTC')
-                else:
-                    # If already timezone-aware, convert to UTC
-                    df[col] = df[col].dt.tz_convert('UTC')
+                # Use ISO8601 format for better compatibility
+                df[col] = pd.to_datetime(df[col], format='ISO8601', utc=True)
             except Exception as e:
                 print(f"Warning: Could not process {col} column: {str(e)}")
                 continue
@@ -137,11 +155,28 @@ if 'df' in st.session_state:
     date_options = ["Today", "This Week", "Later than One Week", "All Time"]
     selected_date = st.sidebar.selectbox("Select Time Range", date_options, index=3)
     
+    # Future markets only filter - DEFAULT TO TRUE
+    show_future_only = st.sidebar.checkbox("Show only future markets (endDate > today)", value=True, key='future_only_filter')
+    
     # Active/Closed/Archived filters
     st.sidebar.markdown("**Market Status**")
     active_filter = st.sidebar.checkbox("Active Markets", value=True, key='active_filter')
     closed_filter = st.sidebar.checkbox("Closed Markets", value=False, key='closed_filter')
     archived_filter = st.sidebar.checkbox("Archived Markets", value=False, key='archived_filter')
+    
+    # Winning probability filter
+    if 'winning_probability' in df.columns and df['winning_probability'].notna().any():
+        min_prob = float(df['winning_probability'].min()) if df['winning_probability'].notna().any() else 0.0
+        max_prob = float(df['winning_probability'].max()) if df['winning_probability'].notna().any() else 100.0
+        prob_range = st.sidebar.slider(
+            "Winning Probability Range (%)",
+            min_value=min_prob,
+            max_value=max_prob,
+            value=(min_prob, max_prob),
+            format="%.1f%%"
+        )
+    else:
+        prob_range = None
     
     # Volume range filter
     if 'volumeNum' in df.columns:
@@ -201,6 +236,11 @@ if 'df' in st.session_state:
     # Apply filters
     filtered_df = df.copy()
     
+    # Apply future markets filter - DEFAULT ENABLED
+    if show_future_only and 'endDate' in filtered_df.columns:
+        today = datetime.now(timezone.utc)
+        filtered_df = filtered_df[filtered_df['endDate'] > today]
+    
     # Apply date filter
     if 'endDate' in df.columns:
         start_date, end_date = get_date_range(selected_date)
@@ -222,6 +262,13 @@ if 'df' in st.session_state:
     
     if 'archived' in filtered_df.columns and not archived_filter:
         filtered_df = filtered_df[filtered_df['archived'] == False]
+    
+    # Apply winning probability filter
+    if prob_range and 'winning_probability' in filtered_df.columns:
+        filtered_df = filtered_df[
+            (filtered_df['winning_probability'] >= prob_range[0]) &
+            (filtered_df['winning_probability'] <= prob_range[1])
+        ]
     
     # Apply volume filter
     if volume_range:
@@ -278,11 +325,11 @@ if 'df' in st.session_state:
     with tab1:
         st.subheader("Market Details")
         
-        # Select columns to display
-        display_columns = ['question', 'volumeNum', 'liquidityNum', 'endDate', 'active', 'category']
+        # Select columns to display - include winning probability
+        display_columns = ['question', 'winning_probability', 'volumeNum', 'liquidityNum', 'endDate', 'active', 'category']
         # Fallback to old column names if new ones don't exist
         if 'volumeNum' not in filtered_df.columns and 'volume' in filtered_df.columns:
-            display_columns = ['question', 'volume', 'liquidity', 'endDate', 'active', 'category']
+            display_columns = ['question', 'winning_probability', 'volume', 'liquidity', 'endDate', 'active', 'category']
         
         available_columns = [col for col in display_columns if col in filtered_df.columns]
         
@@ -299,6 +346,13 @@ if 'df' in st.session_state:
             "active": st.column_config.CheckboxColumn("Active"),
             "category": st.column_config.TextColumn("Category")
         }
+        
+        if 'winning_probability' in display_df.columns:
+            column_config["winning_probability"] = st.column_config.NumberColumn(
+                "Winning Probability", 
+                format="%.1f%%",
+                help="Highest probability among all outcomes"
+            )
         
         if 'volumeNum' in display_df.columns:
             column_config["volumeNum"] = st.column_config.NumberColumn("Volume", format="$%.2f")
@@ -379,20 +433,38 @@ if 'df' in st.session_state:
         with st.expander("Filtered Data Statistics"):
             st.write("**Filtered DataFrame Shape:**", filtered_df.shape)
             st.write(filtered_df.describe())
+        
+        with st.expander("Winning Probability Calculation"):
+            st.markdown("""
+            **How Winning Probability is Calculated:**
+            
+            The winning probability is derived from the `outcomePrices` field in the API response. 
+            This field contains an array of probabilities for each outcome (e.g., ["0.45", "0.55"] for Yes/No markets).
+            
+            - The highest probability among all outcomes is displayed as the "Winning Probability"
+            - Values are shown as percentages (0-100%)
+            - This represents the market's current assessment of the most likely outcome
+            
+            **Example:**
+            - If outcomePrices = ["0.65", "0.35"], the winning probability is 65%
+            - This means the market believes there's a 65% chance of the first outcome occurring
+            """)
 
 else:
     st.info("👈 Click 'Fetch Latest Data' in the sidebar to load market data")
     
     st.markdown("""
     ### Features:
-    - 📊 View market details with volume, liquidity, and end dates
+    - 📊 View market details with winning probability, volume, liquidity, and end dates
     - 🔍 Explore raw JSON data as DataFrame
-    - 🎯 Filter by time range, volume, liquidity, and category
+    - 🎯 Filter by time range, winning probability, volume, liquidity, and category
     - 📈 Toggle between active, closed, and archived markets
+    - 🔮 Default filter shows only future markets (endDate > today)
     - 💾 Download data as JSON or CSV
     
     ### Getting Started:
     1. Click **"Fetch Latest Data"** in the sidebar
-    2. Adjust filters to narrow down markets
+    2. Adjust filters to narrow down markets (default shows future markets only)
     3. Explore different tabs for various data views
+    4. View winning probabilities to see market sentiment
     """)
